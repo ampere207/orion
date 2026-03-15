@@ -15,6 +15,8 @@ class WorkflowStatus:
     workflow_id: str
     state: WorkflowState
     details: dict[str, Any]
+    steps: dict[str, dict[str, Any]]
+    timeline: list[dict[str, Any]]
 
 
 class WorkflowStateTracker:
@@ -26,6 +28,8 @@ class WorkflowStateTracker:
             workflow_id=workflow_id,
             state=WorkflowState.PENDING,
             details={},
+            steps={},
+            timeline=[],
         )
 
     def update(self, workflow_id: str, state: WorkflowState, details: dict[str, Any] | None = None) -> None:
@@ -39,3 +43,18 @@ class WorkflowStateTracker:
 
     def get(self, workflow_id: str) -> WorkflowStatus | None:
         return self._statuses.get(workflow_id)
+
+    def record_step(self, workflow_id: str, node_id: str, data: dict[str, Any]) -> None:
+        current = self._statuses.get(workflow_id)
+        if not current:
+            self.create(workflow_id)
+            current = self._statuses[workflow_id]
+        existing = current.steps.get(node_id, {})
+        current.steps[node_id] = {**existing, **data}
+
+    def append_timeline(self, workflow_id: str, event: dict[str, Any]) -> None:
+        current = self._statuses.get(workflow_id)
+        if not current:
+            self.create(workflow_id)
+            current = self._statuses[workflow_id]
+        current.timeline.append(event)

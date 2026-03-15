@@ -1,3 +1,4 @@
+import logging
 import uuid
 
 from fastapi import APIRouter, HTTPException, Request
@@ -6,6 +7,7 @@ from api.schemas.task_schemas import TaskRequest, TaskResponse
 from core.dependencies import AppContainer
 
 router = APIRouter(prefix="", tags=["task"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("/task", response_model=TaskResponse)
@@ -26,4 +28,8 @@ async def create_task(payload: TaskRequest, request: Request) -> TaskResponse:
         )
         return TaskResponse(**execution)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Workflow execution failed: {exc}") from exc
+        logger.exception("Workflow execution failed for workflow_id=%s", workflow_id)
+        raise HTTPException(
+            status_code=500,
+            detail="Workflow execution failed. Please retry; if the issue persists, check provider quota and logs.",
+        ) from exc

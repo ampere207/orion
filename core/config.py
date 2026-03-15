@@ -6,9 +6,11 @@ class Settings(BaseSettings):
     app_name: str = "Orion"
     app_env: str = "development"
     log_level: str = "INFO"
+    workflow_max_retries: int = 3
 
     gemini_api_key: str = ""
-    gemini_model: str = "gemini-1.5-flash"
+    gemini_api_key_fallback: str = ""
+    gemini_model: str = "gemini-2.5-flash"
     gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
 
     postgres_url: str = "postgresql+asyncpg://orion:orion@localhost:5432/orion"

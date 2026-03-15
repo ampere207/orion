@@ -16,12 +16,13 @@ class WorkflowGraphBuilder:
 
         for index, step in enumerate(steps, start=1):
             current = step.get("id") or f"step_{index}"
+            has_explicit_dependencies = "depends_on" in step
             depends_on = step.get("depends_on", [])
 
-            if depends_on:
+            if has_explicit_dependencies and depends_on:
                 for dependency in depends_on:
                     graph.add_edge(dependency, current)
-            elif index > 1:
+            elif not has_explicit_dependencies and index > 1:
                 previous = node_ids[index - 2]
                 graph.add_edge(previous, current)
 

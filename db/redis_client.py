@@ -38,3 +38,20 @@ class RedisClient:
         if raw is None:
             return None
         return json.loads(raw)
+
+    async def append_json_list(self, key: str, value: dict[str, Any]) -> None:
+        if self._is_ready:
+            await self._client.rpush(key, json.dumps(value))
+            return
+
+        existing = json.loads(self._fallback.get(key, "[]"))
+        existing.append(value)
+        self._fallback[key] = json.dumps(existing)
+
+    async def get_json_list(self, key: str) -> list[dict[str, Any]]:
+        if self._is_ready:
+            raw_items = await self._client.lrange(key, 0, -1)
+            return [json.loads(item) for item in raw_items]
+
+        raw = self._fallback.get(key, "[]")
+        return json.loads(raw)
