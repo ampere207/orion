@@ -19,8 +19,9 @@ async def get_workflow_status(workflow_id: str, request: Request) -> WorkflowSta
 
     status_value = in_memory_status.state.value if in_memory_status else history["status"]
     details = in_memory_status.details if in_memory_status else {}
-    steps = list(in_memory_status.steps.values()) if in_memory_status else []
+    steps = list(in_memory_status.steps.values()) if in_memory_status else history.get("steps", [])
     timeline = in_memory_status.timeline if in_memory_status and in_memory_status.timeline else progress
+    execution_history = history.get("agent_tasks", []) + history.get("task_results", []) if history else []
 
     return WorkflowStatusResponse(
         workflow_id=workflow_id,
@@ -31,4 +32,5 @@ async def get_workflow_status(workflow_id: str, request: Request) -> WorkflowSta
         error=history.get("error") if history else None,
         steps=steps,
         execution_timeline=timeline,
+        execution_history=execution_history,
     )

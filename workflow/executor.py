@@ -7,11 +7,15 @@ from typing import Any
 import networkx as nx
 
 from agent_registry.registry import AgentRegistry
-from agents.agent_messaging import AgentMessaging
 from agents.agent_router import AgentRouter
+from core.config import Settings
 from memory.context_manager import ContextManager
 from memory.long_term_memory import LongTermMemory
 from memory.short_term_memory import ShortTermMemory
+from messaging.rabbitmq_client import RabbitMQClient
+from runtime.concurrency_manager import ConcurrencyManager
+from runtime.task_dispatcher import TaskDispatcher
+from workers.worker_manager import WorkerManager
 from workflow.retry_manager import RetryManager
 from workflow.workflow_state import WorkflowState, WorkflowStateTracker
 
@@ -19,23 +23,31 @@ from workflow.workflow_state import WorkflowState, WorkflowStateTracker
 class WorkflowExecutor:
     def __init__(
         self,
+        settings: Settings,
         agent_registry: AgentRegistry,
         short_term_memory: ShortTermMemory,
         long_term_memory: LongTermMemory,
         state_tracker: WorkflowStateTracker,
         context_manager: ContextManager,
-        messaging: AgentMessaging,
         agent_router: AgentRouter,
         retry_manager: RetryManager,
+        task_dispatcher: TaskDispatcher,
+        concurrency_manager: ConcurrencyManager,
+        worker_manager: WorkerManager,
+        rabbitmq_client: RabbitMQClient,
     ) -> None:
+        self._settings = settings
         self._agent_registry = agent_registry
         self._short_term_memory = short_term_memory
         self._long_term_memory = long_term_memory
         self._state_tracker = state_tracker
         self._context_manager = context_manager
-        self._messaging = messaging
         self._agent_router = agent_router
         self._retry_manager = retry_manager
+        self._task_dispatcher = task_dispatcher
+        self._concurrency_manager = concurrency_manager
+        self._worker_manager = worker_manager
+        self._rabbitmq_client = rabbitmq_client
 
     async def execute(
         self,
@@ -55,18 +67,30 @@ class WorkflowExecutor:
 
         for node_id in nx.topological_sort(graph):
             node_data = graph.nodes[node_id]
-            self._state_tracker.record_step(
-                workflow_id,
-                node_id,
-                {
-                    "node_id": node_id,
-                    "agent": node_data.get("agent"),
-                    "task": node_data.get("task"),
-                    "tool": node_data.get("tool"),
-                    "depends_on": list(graph.predecessors(node_id)),
-                    "status": WorkflowState.PENDING.value,
-                    "attempts": 0,
-                },
+            step_agent = node_data.get("agent") or await self._agent_router.route(node_data.get("task") or user_task)
+            step_task = node_data.get("task") or user_task
+            step_tool = node_data.get("tool")
+            step_depends = list(graph.predecessors(node_id))
+
+            step_payload = {
+                "node_id": node_id,
+                "agent": step_agent,
+                "task": step_task,
+                "tool": step_tool,
+                "depends_on": step_depends,
+                "status": WorkflowState.PENDING.value,
+                "attempts": 0,
+            }
+            self._state_tracker.record_step(workflow_id, node_id, step_payload)
+            await self._long_term_memory.save_workflow_step(
+                workflow_id=workflow_id,
+                node_id=node_id,
+                agent=step_agent,
+                task=step_task,
+                status=WorkflowState.PENDING.value,
+                attempts=0,
+                tool=step_tool,
+                depends_on=step_depends,
             )
 
         try:
@@ -84,13 +108,15 @@ class WorkflowExecutor:
 
                 tasks = [
                     asyncio.create_task(
-                        self._run_node_with_retry(
-                            workflow_id=workflow_id,
-                            node_id=node_id,
-                            graph=graph,
-                            user_task=user_task,
-                            node_outputs=node_outputs,
-                            initial_context=initial_context or {},
+                        self._concurrency_manager.run(
+                            self._run_node_with_retry(
+                                workflow_id=workflow_id,
+                                node_id=node_id,
+                                graph=graph,
+                                user_task=user_task,
+                                node_outputs=node_outputs,
+                                initial_context=initial_context or {},
+                            )
                         )
                     )
                     for node_id in ready_nodes
@@ -110,6 +136,18 @@ class WorkflowExecutor:
                             "attempts": attempts,
                             "output": output,
                         },
+                    )
+                    step = self._state_tracker.get(workflow_id).steps[node_id]
+                    await self._long_term_memory.save_workflow_step(
+                        workflow_id=workflow_id,
+                        node_id=node_id,
+                        agent=step.get("agent") or "unknown",
+                        task=step.get("task") or user_task,
+                        status=WorkflowState.COMPLETED.value,
+                        attempts=attempts,
+                        tool=step.get("tool"),
+                        depends_on=step.get("depends_on", []),
+                        output=output,
                     )
 
             ordered_nodes = list(nx.topological_sort(graph))
@@ -162,7 +200,7 @@ class WorkflowExecutor:
         self._state_tracker.record_step(workflow_id, node_id, {"status": WorkflowState.RUNNING.value})
 
         async def operation() -> tuple[str, dict[str, Any]]:
-            return await self._run_node(
+            return await self._dispatch_and_wait_node(
                 workflow_id=workflow_id,
                 node_id=node_id,
                 graph=graph,
@@ -176,6 +214,7 @@ class WorkflowExecutor:
             await self._append_event(workflow_id, "step_completed", {"node_id": node_id, "attempts": attempts})
             return result[0], result[1], attempts
         except Exception as exc:
+            step = self._state_tracker.get(workflow_id).steps.get(node_id, {})
             self._state_tracker.record_step(
                 workflow_id,
                 node_id,
@@ -185,6 +224,17 @@ class WorkflowExecutor:
                     "error": str(exc),
                 },
             )
+            await self._long_term_memory.save_workflow_step(
+                workflow_id=workflow_id,
+                node_id=node_id,
+                agent=step.get("agent") or "unknown",
+                task=step.get("task") or user_task,
+                status=WorkflowState.FAILED.value,
+                attempts=self._retry_manager.max_retries,
+                tool=step.get("tool"),
+                depends_on=step.get("depends_on", []),
+                error=str(exc),
+            )
             await self._append_event(
                 workflow_id,
                 "step_failed",
@@ -192,7 +242,7 @@ class WorkflowExecutor:
             )
             raise
 
-    async def _run_node(
+    async def _dispatch_and_wait_node(
         self,
         workflow_id: str,
         node_id: str,
@@ -205,7 +255,6 @@ class WorkflowExecutor:
         agent_name = node_data.get("agent") or await self._agent_router.route(node_data.get("task") or user_task)
         task = node_data.get("task") or user_task
 
-        agent = self._agent_registry.get_agent(agent_name)
         successor_agents = []
         for successor in graph.successors(node_id):
             successor_data = graph.nodes[successor]
@@ -216,7 +265,7 @@ class WorkflowExecutor:
         predecessor_outputs = {
             predecessor: node_outputs.get(predecessor) for predecessor in graph.predecessors(node_id)
         }
-        context = {
+        task_context = {
             **initial_context,
             "workflow_id": workflow_id,
             "node_id": node_id,
@@ -224,11 +273,65 @@ class WorkflowExecutor:
             "tool": node_data.get("tool"),
             "successor_agents": successor_agents,
         }
+        payload = {
+            "workflow_id": workflow_id,
+            "node_id": node_id,
+            "agent": agent_name,
+            "task": task,
+            "context": task_context,
+        }
 
-        output = await agent.execute(task, context)
-        await self._short_term_memory.set_node_output(workflow_id, node_id, output)
+        if self._rabbitmq_client.is_ready:
+            queue_name = await self._task_dispatcher.dispatch(payload)
+            await self._long_term_memory.save_agent_task(
+                workflow_id=workflow_id,
+                node_id=node_id,
+                queue_name=queue_name,
+                agent=agent_name,
+                status="queued",
+                payload=payload,
+            )
+        else:
+            queue_name = "in_process_fallback"
+            await self._long_term_memory.save_agent_task(
+                workflow_id=workflow_id,
+                node_id=node_id,
+                queue_name=queue_name,
+                agent=agent_name,
+                status="dispatched_local",
+                payload=payload,
+            )
+            await self._worker_manager.run_in_process(payload)
+
+        output = await self._wait_for_node_result(workflow_id, node_id)
+        if output is None:
+            raise TimeoutError(f"Timed out waiting for result of node '{node_id}'")
+
+        await self._long_term_memory.save_task_result(
+            workflow_id=workflow_id,
+            node_id=node_id,
+            agent=agent_name,
+            output=output,
+            metadata={"queue_name": queue_name},
+        )
         await self._context_manager.update_context(workflow_id, {f"{node_id}_result": output})
         return node_id, output
+
+    async def _wait_for_node_result(self, workflow_id: str, node_id: str) -> dict[str, Any] | None:
+        poll_interval = self._settings.workflow_result_poll_interval_seconds
+        timeout = self._settings.workflow_result_timeout_seconds
+        start = asyncio.get_running_loop().time()
+
+        while True:
+            output = await self._short_term_memory.get_node_output(workflow_id, node_id)
+            if output is not None:
+                return output
+
+            elapsed = asyncio.get_running_loop().time() - start
+            if elapsed >= timeout:
+                return None
+
+            await asyncio.sleep(poll_interval)
 
     async def _append_event(self, workflow_id: str, event_type: str, details: dict[str, Any]) -> None:
         event = {

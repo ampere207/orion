@@ -5,8 +5,10 @@ description = "Orion multi-agent AI orchestration platform"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+	"aio-pika>=9.5.5",
 	"asyncpg>=0.30.0",
 	"fastapi>=0.115.0",
+	"graphviz>=0.20.3",
 	"httpx>=0.28.0",
 	"networkx>=3.4.2",
 	"pydantic-settings>=2.8.1",

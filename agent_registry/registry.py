@@ -15,3 +15,11 @@ class AgentRegistry:
 
     def list_agents(self) -> list[str]:
         return sorted(self._agents.keys())
+
+    def get_capabilities(self) -> dict[str, dict[str, str]]:
+        capabilities: dict[str, dict[str, str]] = {}
+        for agent_name, agent in self._agents.items():
+            capabilities[agent_name] = {
+                "description": getattr(agent, "description", ""),
+            }
+        return capabilities

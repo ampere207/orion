@@ -20,8 +20,8 @@ class WorkflowStepResponse(BaseModel):
 class TaskResponse(BaseModel):
     workflow_id: str
     status: str
-    result: str
-    steps: list[WorkflowStepResponse]
-    node_outputs: dict
+    result: str | None = None
+    steps: list[WorkflowStepResponse] = Field(default_factory=list)
+    node_outputs: dict = Field(default_factory=dict)
     timeline: list[dict] = Field(default_factory=list)
     shared_context: dict = Field(default_factory=dict)

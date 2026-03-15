@@ -1,6 +1,8 @@
 from llm.llm_interface import LLMInterface
 
+from agent_registry.registry import AgentRegistry
 from agents.agent_router import AgentRouter
+from tools.tool_registry import ToolRegistry
 
 
 class PlannerAgent:
@@ -39,12 +41,28 @@ class PlannerAgent:
         "vector search": "vector_search",
     }
 
-    def __init__(self, llm_client: LLMInterface, agent_router: AgentRouter) -> None:
+    def __init__(
+        self,
+        llm_client: LLMInterface,
+        agent_router: AgentRouter,
+        agent_registry: AgentRegistry,
+        tool_registry: ToolRegistry,
+    ) -> None:
         self._llm_client = llm_client
         self._agent_router = agent_router
+        self._agent_registry = agent_registry
+        self._tool_registry = tool_registry
 
     async def create_plan(self, task: str) -> dict:
-        raw_plan = await self._llm_client.plan_task(task)
+        capabilities = self._agent_registry.get_capabilities()
+        tools = self._tool_registry.list_tools()
+        planning_prompt = (
+            f"Task: {task}\n"
+            f"Available agents and capabilities: {capabilities}\n"
+            f"Available tools: {tools}\n"
+            "Create a step-by-step workflow plan with dependencies and optional tool usage."
+        )
+        raw_plan = await self._llm_client.plan_task(planning_prompt)
         return await self._normalize_plan(raw_plan, task)
 
     async def _normalize_plan(self, plan: dict, task: str) -> dict:

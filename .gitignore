@@ -13,3 +13,7 @@ wheels/
 .env
 
 /python.exe
+
+/workflow_diagrams
+
+/tmp

@@ -12,3 +12,4 @@ class WorkflowStatusResponse(BaseModel):
     error: str | None = None
     steps: list[WorkflowStepResponse] = Field(default_factory=list)
     execution_timeline: list[dict] = Field(default_factory=list)
+    execution_history: list[dict] = Field(default_factory=list)

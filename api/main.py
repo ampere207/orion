@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import asyncio
 
 from fastapi import FastAPI
 
@@ -14,8 +15,14 @@ async def lifespan(app: FastAPI):
     configure_logging()
     settings = get_settings()
     container: AppContainer = await build_container(settings)
+    await container.worker_manager.start()
     app.state.container = container
     yield
+
+    for task in container.background_tasks.values():
+        if not task.done():
+            task.cancel()
+    await container.rabbitmq_client.close()
 
 
 app = FastAPI(title="Orion", version="0.1.0", lifespan=lifespan)
